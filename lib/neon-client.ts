@@ -28,17 +28,16 @@ export const neon = createClient({
 });
 
 /**
- * `getJWTToken` is implemented by every Neon auth adapter instance (it lives
- * on the shared `NeonAuthAdapterCore` base class) but is missing from the
- * public `NeonAuthPublicApi<T>` type that `neon.auth` is declared as — an
- * upstream type-export gap, not a runtime one. This is the one place that
- * assertion lives, so our own route handlers can forward the caller's JWT
- * (see lib/server-data-api.ts) without every call site needing to know why.
+ * The SDK also exposes a `getJWTToken()` helper, but under the React adapter
+ * it consistently 404s with `user_not_found` (verified against a live Neon
+ * project — its internal Better Auth instance isn't the same
+ * cookie-authenticated one `getSession()`/`useSession()` use). `getSession()`
+ * is unaffected: Neon injects the session JWT into `session.token` via the
+ * `set-auth-jwt` response header on every auth request, so this reads the
+ * same token the SDK's own Data API calls already forward — just via the
+ * method that actually works.
  */
-type NeonAuthWithToken = {
-  getJWTToken: (allowAnonymous?: boolean) => Promise<string | null>;
-};
-
-export function getAuthToken(): Promise<string | null> {
-  return (neon.auth as unknown as NeonAuthWithToken).getJWTToken(false);
+export async function getAuthToken(): Promise<string | null> {
+  const session = await neon.auth.getSession();
+  return session.data?.session?.token ?? null;
 }

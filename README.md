@@ -2,11 +2,19 @@
 
 A private contact tracker for the people you want to stay connected with — add a name, company, role, where you met, notes, and a priority, then sort and filter your list. Every row is scoped to its owner by Postgres Row Level Security, not just application code, so even a fully public database API can't leak one user's contacts to another.
 
-**Live app:** _pending deployment — added once the app is live on Vercel._
+**Live app:** [networking-tracker-orpin.vercel.app](https://networking-tracker-orpin.vercel.app)
 
-## Screenshots
+## Product walkthrough
 
-_Pending — added after the local end-to-end verification pass (sign-in/out, CRUD, invalid input, two-account isolation)._
+The flow is: sign up → land on `/contacts` (empty state) → **Add contact** opens a dialog for name, company, role, where you met, priority, and notes → the new row appears immediately in a sortable table (cards on mobile) → edit or delete via the row actions → sign out returns you to `/sign-in`.
+
+Verified end-to-end against the live Neon project (not mocked) in this session:
+- Sign-up, sign-out, sign-in as a real account (`test-a@example.com`)
+- Create, edit, delete a contact; the list re-fetches from Postgres after each mutation
+- A hard refresh (and a fresh page load on the deployed URL) still shows the contact — proving it's reading from Postgres, not local state
+- Submitting an empty name shows an inline `Name is required.` error and sends no request
+- A forged request with `priority: "urgent"` (bypassing the UI entirely, sent straight to `/api/contacts`) is rejected server-side with `400 { "error": "Priority must be high, medium, or low." }`
+- The two-account isolation proof below, run against the live database
 
 ## Features
 
@@ -83,6 +91,8 @@ _Pending — added after the local end-to-end verification pass (sign-in/out, CR
    ```
    Open [http://localhost:3000](http://localhost:3000), sign up, and start adding contacts.
 
+Steps 2–4 can also be done with the [Neon CLI](https://neon.com/docs/reference/cli): `neon link --project-id <id> --branch <branch>` pulls `DATABASE_URL` into `.env.local`, and [`neon.ts`](neon.ts) declares `auth: true` / `dataApi: true` so `neon config apply` provisions both services — `neon neon-auth domain allow-localhost enable` replaces the manual trusted-domain step for local dev. This is how this project's own Neon backend was actually provisioned.
+
 ## Environment variables
 
 See [`.env.example`](.env.example) for the full list with placeholder values. Summary:
@@ -123,7 +133,36 @@ The Auth and Data API URLs are safe to expose publicly: they are meaningless wit
   - `contacts_delete_own` — `USING (auth.user_id() = user_id)`
 - The **`USING`** clause on the update policy limits which existing rows an `UPDATE` may even target (must already be yours). The **`WITH CHECK`** clause independently limits what the row is allowed to look like *after* the update — this is the specific mechanism that stops a user from re-assigning one of their own rows to someone else's `user_id`.
 - The app-level validation in `lib/validation.ts` and the route handlers in `app/api/contacts/**` are a UX and defense-in-depth layer, not the security boundary: they never set `user_id` and explicitly strip it from any client-supplied body (`stripOwnerFields`) before ever forwarding a request.
-- **Two-account isolation proof:** _pending — run once Neon setup is live; see [`db/rls-proof.sql`](db/rls-proof.sql) for a database-level proof independent of the app, and the Evidence section below for the app-level walkthrough._
+- **Two-account isolation proof.** [`db/rls-proof.sql`](db/rls-proof.sql) is a database-level proof, independent of the app — run it in the Neon SQL editor. It was also run against the live project: `A sees only own rows`, `A cannot update B row`, `A cannot delete B row`, and the reassignment attempt is blocked by Postgres itself (`insufficient_privilege`, SQLSTATE `42501`) rather than merely filtered — all pass.
+
+  The stronger, app-level proof (below) attacks the real deployed system as one signed-in user targeting another's data, through three different paths at once.
+
+## Evidence
+
+All of the following was run against the live Neon project (production database, not a mock), using two real accounts created through the app's own sign-up form: `test-a@example.com` ("Test User A") and `test-b@example.com` ("Test User B").
+
+**Two-account isolation.** User A created a contact ("Ada Lovelace"). Signed in as User B, three separate attacks were made against that row's real UUID, plus one attempt to reassign B's own row to A:
+
+| Attack (as User B) | Path | Result |
+|---|---|---|
+| Read A's contact | Direct Data API `GET /contacts?id=eq.<ada-id>` | `200`, `[]` — row invisible |
+| Overwrite A's contact | Direct Data API `PATCH /contacts?id=eq.<ada-id>` | `200`, `[]` — 0 rows affected |
+| Delete A's contact | Direct Data API `DELETE /contacts?id=eq.<ada-id>` | `200`, `[]` — 0 rows affected |
+| Overwrite A's contact | This app's own `PATCH /api/contacts/<ada-id>` | `404 { "error": "Contact not found." }` |
+| Delete A's contact | This app's own `DELETE /api/contacts/<ada-id>` | `404 { "error": "Contact not found." }` |
+| Reassign B's own row to belong to A (`user_id: <a-id>`) | Direct Data API `PATCH /contacts?id=eq.<b-contact-id>` | `403`, `{ "code": "42501", "message": "new row violates row-level security policy for table \"contacts\"" }` |
+
+The last row is the `WITH CHECK` clause on `contacts_update_own` firing by name — B cannot even give their own contact away, let alone take someone else's. The route-handler attempts return 404 rather than 403/401 so a caller can't distinguish "not yours" from "doesn't exist."
+
+The mirror direction (A attacking B's data) is not separately re-run: the RLS policies are symmetric and identical for every `authenticated` caller, so what blocks B here blocks any other authenticated user identically — the attacks above exercise every write and read path the app or a hostile client could use.
+
+**Invalid input fails safely.**
+- Client-side: submitting the contact form with an empty `Name` shows a red-bordered field and the inline message `Name is required.` beneath it, without sending a request.
+- Server-side, bypassing the UI: `POST /api/contacts` with `{"name": "Ada Lovelace", "priority": "urgent"}` and a valid session token returns `400 { "error": "Priority must be high, medium, or low." }`.
+
+**Automated tests.** See the *Testing* section below — 20/20 passing, including tests that specifically assert the server rejects invalid input before ever calling the Data API.
+
+**No secrets committed.** `git log -p` on this repository contains no `DATABASE_URL`, connection string, or cookie secret; `.env.local` was never tracked (only `.env.example`, with placeholder values, is committed).
 
 ## Testing
 
@@ -148,11 +187,16 @@ What's covered:
 
 ## Deployment
 
-1. Push this repository to GitHub.
-2. Import it into [Vercel](https://vercel.com/new) (or `vercel deploy` via the CLI).
-3. Add `NEXT_PUBLIC_NEON_AUTH_URL` and `NEXT_PUBLIC_NEON_DATA_API_URL` as production environment variables in the Vercel project settings.
-4. In the Neon console, add the deployed Vercel domain (and any preview domains you need) to Managed Better Auth's trusted origins.
-5. Open the deployed URL in a private browser window and verify sign-up, sign-in, and CRUD work end-to-end.
+This project is deployed at **[networking-tracker-orpin.vercel.app](https://networking-tracker-orpin.vercel.app)**. To deploy your own copy:
+
+1. Push the repository to GitHub.
+2. `vercel link` in the project directory (or import the repo from the Vercel dashboard).
+3. Add `NEXT_PUBLIC_NEON_AUTH_URL` and `NEXT_PUBLIC_NEON_DATA_API_URL` as production environment variables — Vercel will flag them as "looks like a credential" because of the `NEXT_PUBLIC_` prefix; that's expected, confirm them as public config (`--type config` on the CLI, or "Config" if prompted in the dashboard). They're safe to expose: see *Architecture* above.
+4. `vercel --prod` to deploy.
+5. Add the deployed domain to Managed Better Auth's trusted origins (Neon console, or `neon neon-auth domain add <url>` with the CLI).
+6. Open the deployed URL in a private browser window and verify sign-up, sign-in, and CRUD work end-to-end.
+
+Connecting the GitHub repo to Vercel for automatic deploys on push (`vercel git connect` or the dashboard's Git integration) requires authorizing Vercel's GitHub App separately — a one-time browser step on Vercel's side, independent of the deploy itself.
 
 ## Known limitations and next steps
 
@@ -162,3 +206,5 @@ What's covered:
 - No pagination — same scale assumption as above.
 - No contact avatars/photos.
 - The Next.js integration path that uses `NEON_AUTH_BASE_URL`/`NEON_AUTH_COOKIE_SECRET` (cookie-based sessions, server components) was considered but not used — this app uses the browser-direct Neon Auth client instead, which keeps the write path's JWT-forwarding straightforward. Both are legitimate; a server-rendered protected-route model would be the natural next iteration.
+- `@neondatabase/neon-js` is a beta package (`0.7.0-beta`, pinned). Its `getJWTToken()` helper 404s (`user_not_found`) under the React adapter in this version — verified against the live project, not a guess. `lib/neon-client.ts` reads the same token via `getSession()` instead (Neon injects it into `session.token` via the `set-auth-jwt` response header on every auth request), which works reliably and needs no SDK internals. Worth revisiting if a future SDK release fixes `getJWTToken()` directly.
+- No screenshots are embedded in this README — the evidence above documents exact requests, status codes, and error bodies from testing against the live deployment instead. Open the [live app](https://networking-tracker-orpin.vercel.app) directly to see it running.

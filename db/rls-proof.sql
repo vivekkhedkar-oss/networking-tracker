@@ -46,15 +46,22 @@ with attempt as (
 )
 select 'A cannot delete B row' as check, count(*) = 0 as pass from attempt;
 
--- Expect failure (0 rows / constraint violation): A cannot reassign their
--- own row to belong to B via UPDATE ... SET user_id.
-with attempt as (
+-- Expect failure: the WITH CHECK clause raises 42501 (row-level security
+-- violation) rather than silently filtering, unlike the read/update/delete
+-- checks above — so this runs inside a savepoint to keep the transaction
+-- usable afterward.
+savepoint before_reassign;
+do $$
+begin
   update public.contacts
   set user_id = 'user-b-fake-id'
-  where name = 'Contact belonging to A'
-  returning 1
-)
-select 'A cannot reassign own row to B' as check, count(*) = 0 as pass from attempt;
+  where name = 'Contact belonging to A';
+  raise exception 'expected RLS to block this reassignment, but it succeeded';
+exception
+  when insufficient_privilege then
+    raise notice 'A cannot reassign own row to B: pass (blocked by WITH CHECK, code 42501)';
+end $$;
+rollback to savepoint before_reassign;
 
 -- Switch to user B and confirm the mirror image holds.
 select set_config(
