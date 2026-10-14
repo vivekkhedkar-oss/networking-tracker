@@ -43,3 +43,7 @@ next-env.d.ts
 
 # neon
 .neon
+
+# Claude Code skills (vendor docs, installed locally)
+.claude/
+skills-lock.json

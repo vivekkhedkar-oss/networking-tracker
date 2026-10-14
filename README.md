@@ -4,6 +4,8 @@ A private contact tracker for the people you want to stay connected with — add
 
 **Live app:** [networking-tracker-orpin.vercel.app](https://networking-tracker-orpin.vercel.app)
 
+**Stack:** Next.js 16 · React 19 · TypeScript · Tailwind CSS + shadcn/ui · Neon Postgres (Row Level Security) · Neon Auth · Zod · Vitest · Vercel
+
 ## Product walkthrough
 
 The flow is: sign up → land on `/contacts` (empty state) → **Add contact** opens a dialog for name, company, role, where you met, priority, and notes → the new row appears immediately in a sortable table (cards on mobile) → edit or delete via the row actions → sign out returns you to `/sign-in`.
